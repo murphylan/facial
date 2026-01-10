@@ -1,4 +1,36 @@
-# 无感人脸识别系统 - 需求与技术方案
+# 无感人脸识别系统
+
+## 🚀 快速开始
+
+```bash
+# 1. 安装依赖
+pnpm install
+
+# 2. 启动数据库 (需要 Podman)
+podman run -d \
+  --name facial-postgres \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=facial \
+  -p 5433:5432 \
+  pgvector/pgvector:0.8.1-pg18-trixie
+
+# 3. 启用 vector 扩展
+podman exec -it facial-postgres psql -U postgres -d facial -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 4. 配置环境变量
+echo 'DATABASE_URL="postgresql://postgres:postgres@localhost:5433/facial"' > .env.local
+
+# 5. 推送数据库 schema
+pnpm db:push
+
+# 6. 启动开发服务器
+pnpm dev
+```
+
+> ⚠️ 需要 Node.js >= 20.9.0 (推荐使用 nvm 管理版本)
+
+---
 
 ## 🎯 核心理念
 
@@ -18,14 +50,34 @@
 |-------|-----|
 | 部署方式 | 本地开发 → Podman 容器化部署 |
 | 数据规模 | ≤100 人 |
-| 数据库 | PostgreSQL 17 + pgvector |
+| 数据库 | PostgreSQL 18 + pgvector 0.8.1 |
 | AI 方案 | Node.js 原生库 (无 Python 依赖) |
 | 摄像头 | 单摄像头 → 多摄像头扩展 |
 
 ### 数据库连接
 
 ```bash
-DATABASE_URL="postgresql://postgres:postgres@localhost:5433/requirement?schema=facial"
+# .env.local
+DATABASE_URL="postgresql://postgres:postgres@localhost:5433/facial"
+```
+
+### 数据库容器
+
+```bash
+# 启动 pgvector 容器
+podman run -d \
+  --name facial-postgres \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=facial \
+  -p 5433:5432 \
+  pgvector/pgvector:0.8.1-pg18-trixie
+
+# 启用 vector 扩展
+podman exec -it facial-postgres psql -U postgres -d facial -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 推送数据库 schema
+pnpm db:push
 ```
 
 ### 技术栈
@@ -431,75 +483,103 @@ export function IdentityForm({ identity }: Props) {
 ## 📁 目录结构
 
 ```
-app/
-├── actions/                    # Server Actions (所有数据操作)
-│   ├── upload.ts              # 上传相关
-│   ├── face.ts                # 人脸相关
-│   ├── cluster.ts             # 聚类相关
-│   ├── identity.ts            # 身份相关
-│   ├── annotation.ts          # 标注相关
-│   └── recognition.ts         # 识别相关
-├── (dashboard)/               # 页面路由组
-│   ├── page.tsx               # 仪表盘
-│   ├── upload/
-│   ├── clusters/
-│   ├── annotate/
-│   ├── identities/
-│   ├── recognition/
-│   └── settings/
-├── layout.tsx
-└── providers.tsx              # React Query Provider
-
-components/
-├── ui/                        # shadcn/ui 组件
-├── camera/                    # 摄像头相关组件
-│   ├── camera-feed.tsx       # 视频流显示
-│   ├── camera-selector.tsx   # 摄像头选择
-│   └── face-overlay.tsx      # 人脸框叠加层
-├── upload/                    # 上传相关组件
-├── cluster/                   # 聚类相关组件
-├── annotation/                # 标注相关组件
-├── identity/                  # 身份相关组件
-└── recognition/               # 识别相关组件
-
-hooks/                         # React Query Hooks
-├── use-camera.ts              # 摄像头控制
-├── use-upload.ts              # useQuery + useMutation
-├── use-faces.ts               # useQuery + useMutation
-├── use-clusters.ts            # useQuery + useMutation
-├── use-identities.ts          # useQuery + useMutation
-├── use-annotations.ts         # useQuery + useMutation
-└── use-recognition.ts         # useQuery + useMutation
-
-stores/                        # Zustand Stores (仅客户端UI状态)
-├── camera-store.ts            # 摄像头状态、当前帧
-├── upload-store.ts            # 上传进度、队列状态
-├── annotation-store.ts        # 标注工作台 UI 状态
-└── settings-store.ts          # 用户偏好设置
-
-db/
-├── index.ts                   # Drizzle 客户端
-├── schema.ts                  # 表定义
-└── migrations/                # 迁移文件
-
-lib/
-├── human.ts                   # @vladmandic/human 封装
-├── clustering.ts              # 聚类算法
-├── embedding.ts               # 向量操作 (比较、搜索)
-└── utils.ts                   # 工具函数
+src/
+├── app/
+│   ├── actions/                    # Server Actions (所有数据操作)
+│   │   ├── camera.ts              # 摄像头管理
+│   │   ├── cluster.ts             # 聚类管理
+│   │   ├── clustering.ts          # 聚类算法调用
+│   │   ├── detect.ts              # 人脸检测
+│   │   ├── face.ts                # 人脸 CRUD
+│   │   ├── identity.ts            # 身份管理
+│   │   ├── recognition.ts         # 实时识别
+│   │   ├── stats.ts               # 仪表盘统计
+│   │   └── upload.ts              # 图片上传处理
+│   ├── (dashboard)/               # 页面路由组
+│   │   ├── page.tsx               # 仪表盘首页
+│   │   ├── annotate/              # 标注工作台
+│   │   ├── camera/                # 实时摄像头
+│   │   ├── clusters/              # 聚类浏览
+│   │   │   └── [id]/              # 聚类详情
+│   │   ├── identities/            # 身份管理
+│   │   │   └── [id]/              # 身份详情
+│   │   ├── recognition/           # 识别监控
+│   │   ├── settings/              # 系统设置
+│   │   ├── upload/                # 数据上传
+│   │   └── layout.tsx             # 仪表盘布局
+│   ├── layout.tsx                 # 根布局
+│   ├── providers.tsx              # React Query Provider
+│   └── globals.css                # 全局样式
+│
+├── components/
+│   ├── ui/                        # shadcn/ui 组件
+│   ├── layout/                    # 布局组件
+│   │   ├── app-sidebar.tsx        # 侧边栏导航
+│   │   └── header.tsx             # 顶部栏
+│   ├── camera/                    # 摄像头相关
+│   │   ├── camera-feed.tsx        # 视频流显示
+│   │   ├── camera-selector.tsx    # 摄像头选择器
+│   │   └── face-overlay.tsx       # 人脸框叠加层
+│   ├── cluster/                   # 聚类相关
+│   │   ├── cluster-card.tsx       # 聚类卡片
+│   │   ├── cluster-toolbar.tsx    # 聚类工具栏
+│   │   └── face-grid.tsx          # 人脸网格
+│   ├── identity/                  # 身份相关
+│   │   ├── identity-card.tsx      # 身份卡片
+│   │   ├── identity-form.tsx      # 身份表单
+│   │   └── identity-selector.tsx  # 身份选择器
+│   ├── recognition/               # 识别相关
+│   │   ├── realtime-indicator.tsx # 实时状态指示
+│   │   ├── recognition-badge.tsx  # 识别徽章
+│   │   └── recognition-result.tsx # 识别结果展示
+│   ├── annotation/                # 标注相关
+│   └── upload/                    # 上传相关
+│
+├── hooks/                         # React Query Hooks
+│   ├── use-cameras.ts             # 摄像头管理
+│   ├── use-clusters.ts            # 聚类数据
+│   ├── use-clustering.ts          # 聚类操作
+│   ├── use-face-detection.ts      # 实时人脸检测
+│   ├── use-faces.ts               # 人脸数据
+│   ├── use-identities.ts          # 身份数据
+│   ├── use-mobile.ts              # 移动端检测
+│   ├── use-recognition.ts         # 识别功能
+│   ├── use-stats.ts               # 统计数据
+│   └── use-upload.ts              # 上传功能
+│
+├── stores/                        # Zustand Stores (仅客户端 UI 状态)
+│   ├── camera-store.ts            # 摄像头状态、当前帧
+│   ├── upload-store.ts            # 上传进度、队列
+│   ├── annotation-store.ts        # 标注工作台 UI 状态
+│   └── settings-store.ts          # 用户偏好设置
+│
+├── db/
+│   ├── index.ts                   # Drizzle 客户端
+│   ├── schema.ts                  # 表定义 (facial schema)
+│   └── migrations/                # 迁移文件
+│
+└── lib/
+    ├── human.ts                   # @vladmandic/human 封装
+    ├── clustering.ts              # 聚类算法 (DBSCAN)
+    ├── embedding.ts               # 向量操作 (余弦相似度)
+    └── utils.ts                   # 工具函数
 ```
 
 ---
 
 ## 💾 数据库设计 (Drizzle Schema)
 
+> 使用 `facial` schema 隔离表，避免与其他应用冲突
+
 ```typescript
 // db/schema.ts
-import { pgTable, text, timestamp, jsonb, boolean, real, integer, index } from 'drizzle-orm/pg-core'
-import { vector } from 'drizzle-orm/pg-core' // 需要 pgvector 扩展
+import { pgSchema, text, timestamp, jsonb, boolean, real, integer, index, vector } from 'drizzle-orm/pg-core'
+
+// 定义自定义 schema
+export const facialSchema = pgSchema('facial')
 
 // 0. 摄像头源
-export const cameras = pgTable('cameras', {
+export const cameras = facialSchema.table('cameras', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   type: text('type').notNull(), // 'local' | 'remote' | 'ip'
@@ -509,7 +589,7 @@ export const cameras = pgTable('cameras', {
 })
 
 // 1. 原始图片/视频帧
-export const images = pgTable('images', {
+export const images = facialSchema.table('images', {
   id: text('id').primaryKey(),
   sourceType: text('source_type').notNull(), // 'upload' | 'camera' | 'video'
   sourceId: text('source_id'), // camera_id 或 upload batch id
@@ -519,23 +599,25 @@ export const images = pgTable('images', {
 })
 
 // 2. 检测到的人脸
-export const faces = pgTable('faces', {
+export const faces = facialSchema.table('faces', {
   id: text('id').primaryKey(),
-  imageId: text('image_id').references(() => images.id),
+  imageId: text('image_id').references(() => images.id, { onDelete: 'cascade' }),
   bbox: jsonb('bbox').notNull(), // { x, y, width, height }
   qualityScore: real('quality_score'),
-  embedding: vector('embedding', { dimensions: 512 }), // @vladmandic/human 输出 512 维
+  embedding: vector('embedding', { dimensions: 512 }), // 512 维特征向量
+  thumbnailPath: text('thumbnail_path'), // 人脸缩略图
   age: real('age'),
-  gender: text('gender'),
+  gender: text('gender'), // 'male' | 'female' | 'unknown'
   emotion: text('emotion'),
-  clusterId: text('cluster_id').references(() => clusters.id),
+  clusterId: text('cluster_id').references(() => clusters.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow(),
-}, (table) => ({
-  embeddingIdx: index('faces_embedding_idx').using('ivfflat', table.embedding), // 向量索引
-}))
+}, (table) => [
+  index('faces_cluster_id_idx').on(table.clusterId),
+  index('faces_image_id_idx').on(table.imageId),
+])
 
 // 3. 聚类 (未标注的分组)
-export const clusters = pgTable('clusters', {
+export const clusters = facialSchema.table('clusters', {
   id: text('id').primaryKey(),
   faceCount: integer('face_count').default(0),
   representativeFaceId: text('representative_face_id'),
@@ -545,7 +627,7 @@ export const clusters = pgTable('clusters', {
 })
 
 // 4. 已标注身份
-export const identities = pgTable('identities', {
+export const identities = facialSchema.table('identities', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
@@ -555,32 +637,40 @@ export const identities = pgTable('identities', {
 })
 
 // 5. 身份-聚类关联 (一个身份可以对应多个聚类)
-export const identityClusters = pgTable('identity_clusters', {
+export const identityClusters = facialSchema.table('identity_clusters', {
   id: text('id').primaryKey(),
-  identityId: text('identity_id').references(() => identities.id, { onDelete: 'cascade' }),
-  clusterId: text('cluster_id').references(() => clusters.id, { onDelete: 'cascade' }),
+  identityId: text('identity_id').references(() => identities.id, { onDelete: 'cascade' }).notNull(),
+  clusterId: text('cluster_id').references(() => clusters.id, { onDelete: 'cascade' }).notNull(),
   createdAt: timestamp('created_at').defaultNow(),
-})
+}, (table) => [
+  index('identity_clusters_identity_idx').on(table.identityId),
+  index('identity_clusters_cluster_idx').on(table.clusterId),
+])
 
 // 6. 识别记录
-export const recognitionLogs = pgTable('recognition_logs', {
+export const recognitionLogs = facialSchema.table('recognition_logs', {
   id: text('id').primaryKey(),
-  faceId: text('face_id').references(() => faces.id),
-  matchedIdentityId: text('matched_identity_id').references(() => identities.id),
+  faceId: text('face_id').references(() => faces.id, { onDelete: 'set null' }),
+  matchedIdentityId: text('matched_identity_id').references(() => identities.id, { onDelete: 'set null' }),
   confidence: real('confidence'),
-  cameraId: text('camera_id').references(() => cameras.id),
+  cameraId: text('camera_id').references(() => cameras.id, { onDelete: 'set null' }),
+  isStranger: boolean('is_stranger').default(false), // 是否为陌生人
+  thumbnailPath: text('thumbnail_path'), // 识别时的截图
   timestamp: timestamp('timestamp').defaultNow(),
-})
+}, (table) => [
+  index('recognition_logs_identity_idx').on(table.matchedIdentityId),
+  index('recognition_logs_timestamp_idx').on(table.timestamp),
+])
 ```
 
 ### pgvector 初始化
 
-```sql
--- 在 PostgreSQL 中启用 pgvector 扩展
-CREATE EXTENSION IF NOT EXISTS vector;
+```bash
+# 启用 vector 扩展 (在 facial 数据库中)
+podman exec -it facial-postgres psql -U postgres -d facial -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
--- 创建向量索引 (可选，提升查询速度)
-CREATE INDEX ON faces USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+# 使用 Drizzle 推送 schema
+pnpm db:push
 ```
 
 ---
@@ -653,22 +743,41 @@ interface AnnotationStore {
 
 ---
 
-## 🚀 开发阶段建议
+## 🚀 开发进度
 
-| 阶段 | 内容 | 优先级 |
+| 阶段 | 内容 | 状态 |
 |------|------|--------|
-| **Phase 1** | 基础框架、数据库、pgvector、Server Actions 架构 | 🔴 |
-| **Phase 2** | @vladmandic/human 集成、人脸检测、特征提取 | 🔴 |
-| **Phase 3** | 本地摄像头接入、实时检测预览 | 🔴 |
-| **Phase 4** | 聚类算法、聚类浏览页面 | 🔴 |
-| **Phase 5** | 标注工作台、身份绑定 | 🟡 |
-| **Phase 6** | 实时识别、增量聚类 | 🟡 |
-| **Phase 7** | 多摄像头支持、远程摄像头 | 🟢 |
-| **Phase 8** | Podman 容器化部署 | 🟢 |
+| **Phase 1** | 基础框架、数据库、pgvector、Server Actions 架构 | ✅ 完成 |
+| **Phase 2** | @vladmandic/human 集成、人脸检测、特征提取 | ✅ 完成 |
+| **Phase 3** | 本地摄像头接入、实时检测预览 | ✅ 完成 |
+| **Phase 4** | 聚类算法、聚类浏览页面 | ✅ 完成 |
+| **Phase 5** | 标注工作台、身份绑定 | ✅ 完成 |
+| **Phase 6** | 实时识别、增量聚类 | ✅ 完成 |
+| **Phase 7** | 仪表盘统计、识别监控 | ✅ 完成 |
+| **Phase 8** | 多摄像头支持、远程摄像头 | 🟡 进行中 |
+| **Phase 9** | Podman 容器化部署 | 🟢 待开始 |
 
 ---
 
-## 🐳 Podman 部署 (后期)
+## 🐳 Podman 部署
+
+### 开发环境
+
+```bash
+# 启动数据库容器
+podman run -d \
+  --name facial-postgres \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=facial \
+  -p 5433:5432 \
+  pgvector/pgvector:0.8.1-pg18-trixie
+
+# 启用 vector 扩展
+podman exec -it facial-postgres psql -U postgres -d facial -c "CREATE EXTENSION IF NOT EXISTS vector;"
+```
+
+### 生产部署 (podman-compose)
 
 ```yaml
 # podman-compose.yml
@@ -684,7 +793,7 @@ services:
       - db
       
   db:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector:0.8.1-pg18-trixie
     ports:
       - "5433:5432"
     environment:
@@ -696,6 +805,21 @@ services:
 
 volumes:
   pgdata:
+```
+
+### 常用命令
+
+```bash
+# 数据库操作
+pnpm db:generate   # 生成迁移文件
+pnpm db:migrate    # 执行迁移
+pnpm db:push       # 直接推送 schema (开发用)
+pnpm db:studio     # 打开 Drizzle Studio
+
+# 开发
+pnpm dev           # 启动开发服务器
+pnpm build         # 构建生产版本
+pnpm start         # 启动生产服务器
 ```
 
 ---
