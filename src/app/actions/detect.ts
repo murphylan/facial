@@ -1,12 +1,16 @@
 'use server'
 
 import { db } from '@/db'
-import { faces, images } from '@/db/schema'
+import { faces, images, clusters } from '@/db/schema'
 import { eq } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { generateId } from '@/lib/utils'
+import { cosineSimilarity, meanVector } from '@/lib/embedding'
 import { writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
+
+// 增量聚类阈值
+const CLUSTERING_THRESHOLD = 0.5
 
 // ============================================
 // 人脸检测相关 Server Actions
@@ -114,7 +118,8 @@ export async function saveRecognitionFace(
   cameraId: string,
   detection: DetectedFaceData,
   frameBase64: string
-): Promise<{ imageId: string; faceId: string }> {
+): Promise<{ imageId: string; faceId: string; clusterId: string | null }> {
+  console.log('[saveRecognitionFace] Starting save for camera:', cameraId, 'hasEmbedding:', !!detection.embedding)
   const UPLOAD_DIR = process.env.UPLOAD_DIR ?? './public/uploads'
   const THUMBNAILS_DIR = process.env.THUMBNAILS_DIR ?? './public/thumbnails'
   const dateDir = new Date().toISOString().slice(0, 10).replace(/-/g, '')
@@ -187,7 +192,69 @@ export async function saveRecognitionFace(
     thumbnailPath: thumbnailPublicPath,
   })
 
-  return { imageId, faceId }
+  // 增量聚类 - 自动将新人脸加入现有聚类或创建新聚类
+  let clusterId: string | null = null
+  if (detection.embedding && Array.isArray(detection.embedding)) {
+    const embedding = detection.embedding as number[]
+    
+    // 获取所有待处理的聚类
+    const existingClusters = await db.query.clusters.findMany({
+      where: eq(clusters.status, 'pending'),
+    })
+    
+    // 查找最匹配的聚类
+    let bestMatch: { clusterId: string; similarity: number } | null = null
+    for (const cluster of existingClusters) {
+      if (cluster.centroid) {
+        const similarity = cosineSimilarity(embedding, cluster.centroid as number[])
+        if (similarity >= CLUSTERING_THRESHOLD) {
+          if (!bestMatch || similarity > bestMatch.similarity) {
+            bestMatch = { clusterId: cluster.id, similarity }
+          }
+        }
+      }
+    }
+    
+    if (bestMatch) {
+      // 分配到现有聚类
+      clusterId = bestMatch.clusterId
+      console.log('[saveRecognitionFace] Assigned to existing cluster:', clusterId, 'similarity:', bestMatch.similarity.toFixed(3))
+      await db.update(faces).set({ clusterId }).where(eq(faces.id, faceId))
+      
+      // 更新聚类的中心点和人脸数量
+      const clusterFaces = await db.query.faces.findMany({
+        where: eq(faces.clusterId, clusterId),
+      })
+      const embeddings = clusterFaces
+        .map((f) => f.embedding as number[] | null)
+        .filter((e): e is number[] => e !== null && e.length > 0)
+      
+      if (embeddings.length > 0) {
+        const newCentroid = meanVector(embeddings)
+        await db.update(clusters).set({
+          centroid: newCentroid,
+          faceCount: clusterFaces.length,
+        }).where(eq(clusters.id, clusterId))
+      }
+    } else {
+      // 创建新聚类
+      clusterId = generateId()
+      await db.insert(clusters).values({
+        id: clusterId,
+        faceCount: 1,
+        representativeFaceId: faceId,
+        centroid: embedding,
+        status: 'pending',
+      })
+      await db.update(faces).set({ clusterId }).where(eq(faces.id, faceId))
+      console.log('[saveRecognitionFace] Created new cluster:', clusterId)
+    }
+    
+    revalidatePath('/clusters')
+  }
+
+  console.log('[saveRecognitionFace] Saved face:', faceId, 'cluster:', clusterId)
+  return { imageId, faceId, clusterId }
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   recognizeFace,
   deleteRecognitionLog,
   clearOldLogs,
+  clearAllLogs,
   type RecognizeInput,
 } from '@/app/actions/recognition'
 
@@ -21,8 +22,11 @@ export function useRecognitionLogs(options?: {
   offset?: number
   since?: Date
 }) {
+  // 将 Date 转换为时间戳用于 queryKey，避免对象引用变化导致无限循环
+  const sinceTs = options?.since?.getTime()
+  
   return useQuery({
-    queryKey: ['recognitionLogs', options],
+    queryKey: ['recognitionLogs', { ...options, since: sinceTs }],
     queryFn: () => getRecognitionLogs(options),
   })
 }
@@ -36,8 +40,11 @@ export function useRecentRecognitions(minutes: number = 60) {
 }
 
 export function useRecognitionStats(options?: { since?: Date }) {
+  // 将 Date 转换为时间戳用于 queryKey
+  const sinceTs = options?.since?.getTime()
+  
   return useQuery({
-    queryKey: ['recognitionLogs', 'stats', options],
+    queryKey: ['recognitionLogs', 'stats', sinceTs],
     queryFn: () => getRecognitionStats(options),
   })
 }
@@ -73,6 +80,17 @@ export function useClearOldLogs() {
 
   return useMutation({
     mutationFn: (daysToKeep: number) => clearOldLogs(daysToKeep),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['recognitionLogs'] })
+    },
+  })
+}
+
+export function useClearAllLogs() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: () => clearAllLogs(),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['recognitionLogs'] })
     },

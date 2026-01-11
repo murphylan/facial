@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { recognitionLogs, faces, identities, identityClusters, clusters } from '@/db/schema'
-import { eq, desc, sql, gte } from 'drizzle-orm'
+import { eq, desc, sql, gte, lt } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { generateId } from '@/lib/utils'
 import { cosineSimilarity } from '@/lib/embedding'
@@ -144,8 +144,16 @@ export async function clearOldLogs(daysToKeep: number = 30) {
   
   const result = await db
     .delete(recognitionLogs)
-    .where(sql`${recognitionLogs.timestamp} < ${cutoff}`)
+    .where(lt(recognitionLogs.timestamp, cutoff))
 
   revalidatePath('/recognition')
   return result
+}
+
+/**
+ * 清空所有识别记录
+ */
+export async function clearAllLogs() {
+  await db.delete(recognitionLogs)
+  revalidatePath('/recognition')
 }

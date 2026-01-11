@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Header } from '@/components/layout/header'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -20,6 +20,7 @@ import {
   useRecognitionStats,
   useDeleteRecognitionLog,
   useClearOldLogs,
+  useClearAllLogs,
 } from '@/hooks/use-recognition'
 import {
   Users,
@@ -62,10 +63,12 @@ export default function RecognitionPage() {
   const [timeRange, setTimeRange] = useState<TimeRange>('24h')
   const [filterType, setFilterType] = useState<FilterType>('all')
   const [clearDialogOpen, setClearDialogOpen] = useState(false)
+  const [clearAllDialogOpen, setClearAllDialogOpen] = useState(false)
 
-  const getSinceDate = (range: TimeRange) => {
+  // 使用 useMemo 避免每次渲染创建新 Date 对象导致无限循环
+  const since = useMemo(() => {
     const now = Date.now()
-    switch (range) {
+    switch (timeRange) {
       case '1h':
         return new Date(now - 60 * 60 * 1000)
       case '24h':
@@ -75,9 +78,7 @@ export default function RecognitionPage() {
       case '30d':
         return new Date(now - 30 * 24 * 60 * 60 * 1000)
     }
-  }
-
-  const since = getSinceDate(timeRange)
+  }, [timeRange])
 
   const { data: logs, isLoading: logsLoading, refetch } = useRecognitionLogs({
     since,
@@ -88,6 +89,7 @@ export default function RecognitionPage() {
   const { data: stats, isLoading: statsLoading } = useRecognitionStats({ since })
   const deleteMutation = useDeleteRecognitionLog()
   const clearMutation = useClearOldLogs()
+  const clearAllMutation = useClearAllLogs()
 
   const handleDelete = async (id: string) => {
     try {
@@ -105,6 +107,16 @@ export default function RecognitionPage() {
       setClearDialogOpen(false)
     } catch {
       toast.error('清理失败')
+    }
+  }
+
+  const handleClearAll = async () => {
+    try {
+      await clearAllMutation.mutateAsync()
+      toast.success('已清空所有记录')
+      setClearAllDialogOpen(false)
+    } catch {
+      toast.error('清空失败')
     }
   }
 
@@ -198,6 +210,15 @@ export default function RecognitionPage() {
               <Trash2 className="mr-2 h-4 w-4" />
               清理旧记录
             </Button>
+
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setClearAllDialogOpen(true)}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              清空全部
+            </Button>
           </CardContent>
         </Card>
 
@@ -255,6 +276,29 @@ export default function RecognitionPage() {
             >
               {clearMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               确认清理
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 清空全部确认对话框 */}
+      <AlertDialog open={clearAllDialogOpen} onOpenChange={setClearAllDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清空全部记录</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定要删除所有识别记录吗？此操作无法撤销！
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={handleClearAll}
+              disabled={clearAllMutation.isPending}
+            >
+              {clearAllMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              确认清空
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

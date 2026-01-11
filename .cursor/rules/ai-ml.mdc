@@ -1,0 +1,156 @@
+---
+description: AI/ML 技术方案 - @vladmandic/human、人脸检测、聚类算法
+globs:
+  - "src/lib/human.ts"
+  - "src/lib/clustering.ts"
+  - "src/lib/embedding.ts"
+  - "src/hooks/use-face-detection.ts"
+alwaysApply: false
+---
+
+# AI/ML 技术方案
+
+## 核心库: @vladmandic/human
+
+> 纯 JavaScript/TypeScript 实现，无需 Python 依赖，支持 Node.js 和浏览器
+
+| 功能 | 说明 |
+|------|------|
+| 人脸检测 | BlazeFace / MediaPipe Face |
+| 特征提取 | FaceRes / MobileFaceNet (512维向量) |
+| 活体检测 | 眨眼、点头等动作检测 |
+| 表情识别 | 7种基本表情 |
+| 年龄/性别 | 辅助信息 |
+
+## 服务端使用示例
+
+```typescript
+// lib/human.ts
+import Human from '@vladmandic/human'
+
+const human = new Human({
+  modelBasePath: 'file://models/',
+  face: {
+    enabled: true,
+    detector: { rotation: true },
+    mesh: { enabled: true },
+    iris: { enabled: false },
+    description: { enabled: true }, // 特征向量
+    emotion: { enabled: true },
+  },
+})
+
+await human.load()
+
+export async function detectFaces(imageBuffer: Buffer) {
+  const tensor = human.tf.node.decodeImage(imageBuffer)
+  const result = await human.detect(tensor)
+  human.tf.dispose(tensor)
+  
+  return result.face.map(face => ({
+    bbox: face.box,
+    embedding: face.embedding, // 512维特征向量
+    age: face.age,
+    gender: face.gender,
+    emotion: face.emotion,
+  }))
+}
+```
+
+## 浏览器端使用 (实时检测)
+
+```typescript
+// 使用 CDN 模型
+const human = new Human({
+  modelBasePath: 'https://vladmandic.github.io/human-models/models/',
+  backend: 'webgl',
+  async: true,
+  warmup: 'none',
+  face: {
+    enabled: true,
+    detector: {
+      rotation: true,
+      maxDetected: 10,
+      minConfidence: 0.5,
+    },
+    mesh: { enabled: true },
+    description: { enabled: true },
+    emotion: { enabled: true },
+  },
+  body: { enabled: false },
+  hand: { enabled: false },
+})
+
+// 检测视频帧
+const result = await human.detect(videoElement)
+```
+
+## 聚类算法
+
+### DBSCAN 实现
+
+```typescript
+// lib/clustering.ts
+import { cosineDistance } from './embedding'
+
+export function clusterFaces(
+  embeddings: number[][],
+  threshold: number = 0.5
+): number[] {
+  // 简单的 DBSCAN 实现，适合 <100 人规模
+  // 返回每个 embedding 的聚类 ID
+}
+```
+
+### 相似度计算
+
+```typescript
+// lib/embedding.ts
+
+// 余弦相似度
+export function cosineSimilarity(a: number[], b: number[]): number {
+  let dotProduct = 0
+  let normA = 0
+  let normB = 0
+  
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i]
+    normA += a[i] * a[i]
+    normB += b[i] * b[i]
+  }
+  
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
+}
+
+// 余弦距离
+export function cosineDistance(a: number[], b: number[]): number {
+  return 1 - cosineSimilarity(a, b)
+}
+```
+
+## 技术选型对比
+
+| 任务 | 方案 | 说明 |
+|------|------|------|
+| 人脸检测 | @vladmandic/human | BlazeFace 模型 |
+| 特征提取 | @vladmandic/human | 512维 embedding |
+| 聚类算法 | 自实现 DBSCAN | 简单实现，100人够用 |
+| 向量存储 | PostgreSQL + pgvector | 余弦相似度搜索 |
+| 活体检测 | @vladmandic/human | 眨眼/点头检测 |
+
+## 识别阈值
+
+| 场景 | 推荐阈值 | 说明 |
+|------|---------|------|
+| 识别匹配 | 0.6 | 相似度 >= 0.6 判定为同一人 |
+| 聚类分组 | 0.5 | 相似度 >= 0.5 归入同一聚类 |
+| 陌生人检测 | < 0.6 | 低于阈值标记为陌生人 |
+
+## 备选库
+
+| 库 | 特点 |
+|---|------|
+| `@vladmandic/human` | ⭐ 推荐，功能全面，纯 JS |
+| `face-api.js` | 经典库，但已停止维护 |
+| `@mediapipe/face_mesh` | Google 官方，精度高 |
+| `ml5.js` | 简单易用，适合原型 |

@@ -1,0 +1,155 @@
+---
+description: 数据库设计 - Drizzle Schema、pgvector、表结构
+globs:
+  - "src/db/**/*"
+  - "drizzle.config.ts"
+alwaysApply: false
+---
+
+# 数据库设计
+
+## 概述
+
+- 使用 PostgreSQL 18 + pgvector 0.8.1
+- 使用 `facial` schema 隔离表，避免与其他应用冲突
+- 使用 Drizzle ORM 进行数据库操作
+
+## 数据库 Schema
+
+```typescript
+// db/schema.ts
+import { pgSchema, text, timestamp, jsonb, boolean, real, integer, index, vector } from 'drizzle-orm/pg-core'
+
+// 定义自定义 schema
+export const facialSchema = pgSchema('facial')
+
+// 0. 摄像头源
+export const cameras = facialSchema.table('cameras', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  type: text('type').notNull(), // 'local' | 'remote' | 'ip'
+  streamUrl: text('stream_url'),
+  status: text('status').default('offline'), // 'online' | 'offline'
+  createdAt: timestamp('created_at').defaultNow(),
+})
+
+// 1. 原始图片/视频帧
+export const images = facialSchema.table('images', {
+  id: text('id').primaryKey(),
+  sourceType: text('source_type').notNull(), // 'upload' | 'camera' | 'video'
+  sourceId: text('source_id'), // camera_id 或 upload batch id
+  filePath: text('file_path').notNull(),
+  uploadedAt: timestamp('uploaded_at').defaultNow(),
+  processed: boolean('processed').default(false),
+})
+
+// 2. 检测到的人脸
+export const faces = facialSchema.table('faces', {
+  id: text('id').primaryKey(),
+  imageId: text('image_id').references(() => images.id, { onDelete: 'cascade' }),
+  bbox: jsonb('bbox').notNull(), // { x, y, width, height }
+  qualityScore: real('quality_score'),
+  embedding: vector('embedding', { dimensions: 512 }), // 512 维特征向量
+  thumbnailPath: text('thumbnail_path'), // 人脸缩略图
+  age: real('age'),
+  gender: text('gender'), // 'male' | 'female' | 'unknown'
+  emotion: text('emotion'),
+  clusterId: text('cluster_id').references(() => clusters.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at').defaultNow(),
+}, (table) => [
+  index('faces_cluster_id_idx').on(table.clusterId),
+  index('faces_image_id_idx').on(table.imageId),
+])
+
+// 3. 聚类 (未标注的分组)
+export const clusters = facialSchema.table('clusters', {
+  id: text('id').primaryKey(),
+  faceCount: integer('face_count').default(0),
+  representativeFaceId: text('representative_face_id'),
+  centroid: vector('centroid', { dimensions: 512 }), // 聚类中心向量
+  status: text('status').default('pending'), // 'pending' | 'confirmed' | 'merged'
+  createdAt: timestamp('created_at').defaultNow(),
+})
+
+// 4. 已标注身份
+export const identities = facialSchema.table('identities', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  avatarPath: text('avatar_path'), // 代表照片
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+})
+
+// 5. 身份-聚类关联 (一个身份可以对应多个聚类)
+export const identityClusters = facialSchema.table('identity_clusters', {
+  id: text('id').primaryKey(),
+  identityId: text('identity_id').references(() => identities.id, { onDelete: 'cascade' }).notNull(),
+  clusterId: text('cluster_id').references(() => clusters.id, { onDelete: 'cascade' }).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+}, (table) => [
+  index('identity_clusters_identity_idx').on(table.identityId),
+  index('identity_clusters_cluster_idx').on(table.clusterId),
+])
+
+// 6. 识别记录
+export const recognitionLogs = facialSchema.table('recognition_logs', {
+  id: text('id').primaryKey(),
+  faceId: text('face_id').references(() => faces.id, { onDelete: 'set null' }),
+  matchedIdentityId: text('matched_identity_id').references(() => identities.id, { onDelete: 'set null' }),
+  confidence: real('confidence'),
+  cameraId: text('camera_id').references(() => cameras.id, { onDelete: 'set null' }),
+  isStranger: boolean('is_stranger').default(false), // 是否为陌生人
+  thumbnailPath: text('thumbnail_path'), // 识别时的截图
+  timestamp: timestamp('timestamp').defaultNow(),
+}, (table) => [
+  index('recognition_logs_identity_idx').on(table.matchedIdentityId),
+  index('recognition_logs_timestamp_idx').on(table.timestamp),
+])
+```
+
+## 表关系
+
+```
+cameras ──────┐
+              │
+images ◄──────┼──── faces ◄──── clusters ◄──── identityClusters ──── identities
+              │                     │                                     │
+              │                     └─────────────────────────────────────┘
+              │                                      │
+              └────────────── recognitionLogs ◄──────┘
+```
+
+## pgvector 使用
+
+### 初始化
+
+```bash
+# 启用 vector 扩展
+podman exec -it facial-postgres psql -U postgres -d facial -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# 推送 schema
+pnpm db:push
+```
+
+### 向量操作
+
+```typescript
+// 余弦相似度搜索
+import { sql } from 'drizzle-orm'
+
+const results = await db.query.faces.findMany({
+  where: sql`embedding <=> ${targetEmbedding} < 0.5`,
+  orderBy: sql`embedding <=> ${targetEmbedding}`,
+  limit: 10,
+})
+```
+
+## 常用命令
+
+```bash
+pnpm db:generate   # 生成迁移文件
+pnpm db:migrate    # 执行迁移
+pnpm db:push       # 直接推送 schema (开发用)
+pnpm db:studio     # 打开 Drizzle Studio
+```

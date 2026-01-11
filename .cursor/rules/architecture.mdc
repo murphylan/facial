@@ -1,0 +1,79 @@
+---
+description: 无感人脸识别系统的系统架构和目录结构
+globs:
+  - "src/**/*"
+alwaysApply: false
+---
+
+# 系统架构
+
+## 整体架构图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Frontend (Next.js 16)                        │
+├─────────────┬─────────────┬─────────────┬─────────────┬─────────┤
+│   上传管理   │  聚类浏览   │  标注工作台  │  识别监控   │  设置   │
+│  (Client)   │  (Server)  │  (Client)   │  (Client)   │(Client) │
+└─────────────┴─────────────┴─────────────┴─────────────┴─────────┘
+        │                         │                   │
+        ▼                         ▼                   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  hooks/ (React Query Hooks)                      │
+│  ┌─────────────────────────────┐ ┌─────────────────────────────┐│
+│  │  useQuery (查询)            │ │  useMutation (增删改)       ││
+│  │  • 数据获取/缓存/后台刷新    │ │  • 调用 Server Actions      ││
+│  └─────────────────────────────┘ └─────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    Server Actions Layer                          │
+│   actions/upload.ts | cluster.ts | identity.ts | recognition.ts │
+└─────────────────────────────────────────────────────────────────┘
+                                  │
+                    ┌─────────────┴─────────────┐
+                    ▼                           ▼
+            ┌───────────────┐          ┌────────────────────┐
+            │ Drizzle ORM   │          │  @vladmandic/human │
+            │      ↓        │          │   (Node.js AI库)   │
+            │ PostgreSQL 18 │          └────────────────────┘
+            │  + pgvector   │
+            └───────────────┘
+```
+
+## 技术栈
+
+| 类别 | 技术 |
+|-----|------|
+| Framework | Next.js 16 |
+| Language | TypeScript |
+| Styling | Tailwind CSS v4 |
+| Components | shadcn/ui |
+| State | Zustand |
+| Data Fetching | TanStack Query |
+| ORM | Drizzle |
+| AI/ML | @vladmandic/human |
+
+## 目录结构
+
+- `src/app/actions/` - Server Actions (所有数据操作)
+- `src/app/(dashboard)/` - 页面路由组
+- `src/components/` - React 组件 (ui/, layout/, camera/, cluster/, identity/, recognition/)
+- `src/hooks/` - React Query Hooks
+- `src/stores/` - Zustand Stores (仅客户端 UI 状态)
+- `src/db/` - Drizzle ORM (index.ts, schema.ts)
+- `src/lib/` - 工具库 (human.ts, clustering.ts, embedding.ts, utils.ts)
+
+## 页面路由
+
+- `/` - 仪表盘统计概览
+- `/upload` - 数据上传
+- `/camera` - 实时摄像头
+- `/clusters` - 聚类浏览
+- `/clusters/[id]` - 聚类详情
+- `/annotate` - 标注工作台
+- `/identities` - 身份库
+- `/identities/[id]` - 人员详情
+- `/recognition` - 识别监控
+- `/settings` - 系统设置

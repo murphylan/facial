@@ -1,0 +1,216 @@
+---
+description: 开发规范 - Server Actions、React Query Hooks、状态管理
+globs:
+  - "src/app/actions/**/*"
+  - "src/hooks/**/*"
+  - "src/stores/**/*"
+  - "src/components/**/*"
+alwaysApply: true
+---
+
+# 开发规范
+
+## 1. Server Actions 优先原则
+
+**所有数据操作必须通过 Server Actions 实现，禁止使用传统 API Routes**
+
+```typescript
+// ✅ 正确: 使用 Server Action
+// app/actions/cluster.ts
+'use server'
+
+export async function mergeClusters(clusterIds: string[]) {
+  return await db.update(clusters)...
+}
+
+// ❌ 错误: 使用 API Route
+// app/api/clusters/merge/route.ts
+export async function POST(req: Request) { ... }
+```
+
+## 2. Hooks 调用规范
+
+**客户端组件必须通过 React Query Hooks 调用 Server Actions**
+
+| 操作类型 | 必须使用 | 禁止使用 |
+|---------|---------|---------|
+| 查询 (GET) | `useQuery` | 自定义 fetch |
+| 创建 (CREATE) | `useMutation` | 自定义 async 函数 |
+| 更新 (UPDATE) | `useMutation` | 自定义 async 函数 |
+| 删除 (DELETE) | `useMutation` | 自定义 async 函数 |
+
+## 3. Server Action 定义示例
+
+```typescript
+// app/actions/identity.ts
+'use server'
+
+import { db } from '@/db'
+import { identities } from '@/db/schema'
+import { revalidatePath } from 'next/cache'
+
+// 查询操作 - 供 useQuery 使用
+export async function getIdentities() {
+  return await db.select().from(identities)
+}
+
+export async function getIdentityById(id: string) {
+  return await db.query.identities.findFirst({
+    where: eq(identities.id, id)
+  })
+}
+
+// 变更操作 - 供 useMutation 使用
+export async function createIdentity(data: CreateIdentityInput) {
+  const result = await db.insert(identities).values(data).returning()
+  revalidatePath('/identities')
+  return result[0]
+}
+
+export async function updateIdentity(id: string, data: UpdateIdentityInput) {
+  const result = await db.update(identities)
+    .set(data)
+    .where(eq(identities.id, id))
+    .returning()
+  revalidatePath('/identities')
+  return result[0]
+}
+
+export async function deleteIdentity(id: string) {
+  await db.delete(identities).where(eq(identities.id, id))
+  revalidatePath('/identities')
+}
+```
+
+## 4. React Query Hooks 示例
+
+```typescript
+// hooks/use-identities.ts
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { 
+  getIdentities, 
+  getIdentityById,
+  createIdentity, 
+  updateIdentity, 
+  deleteIdentity 
+} from '@/app/actions/identity'
+
+// ✅ 查询 Hook - useQuery
+export function useIdentities() {
+  return useQuery({
+    queryKey: ['identities'],
+    queryFn: () => getIdentities(),
+  })
+}
+
+export function useIdentity(id: string) {
+  return useQuery({
+    queryKey: ['identities', id],
+    queryFn: () => getIdentityById(id),
+    enabled: !!id,
+  })
+}
+
+// ✅ 变更 Hook - useMutation
+export function useCreateIdentity() {
+  const queryClient = useQueryClient()
+  
+  return useMutation({
+    mutationFn: createIdentity,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['identities'] })
+    },
+  })
+}
+
+export function useUpdateIdentity() {
+  const queryClient = useQueryClient()
+  
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: UpdateIdentityInput }) => 
+      updateIdentity(id, data),
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ['identities'] })
+      queryClient.invalidateQueries({ queryKey: ['identities', id] })
+    },
+  })
+}
+
+export function useDeleteIdentity() {
+  const queryClient = useQueryClient()
+  
+  return useMutation({
+    mutationFn: deleteIdentity,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['identities'] })
+    },
+  })
+}
+```
+
+## 5. 状态管理划分
+
+| 状态类型 | 管理方案 | 说明 |
+|---------|---------|------|
+| 服务端数据 | React Query | 人脸、聚类、身份等业务数据 |
+| 客户端 UI 状态 | Zustand | 弹窗、选中项、拖拽状态等 |
+| 摄像头状态 | Zustand | 当前帧、检测结果 |
+| URL 状态 | nuqs / searchParams | 筛选、分页、排序 |
+
+## 6. Zustand Store 示例
+
+```typescript
+// stores/camera-store.ts
+interface CameraStore {
+  isStreaming: boolean
+  currentFrame: ImageData | null
+  detectedFaces: DetectedFace[]
+  selectedCameraId: string | null
+  
+  // Actions
+  setStreaming: (value: boolean) => void
+  updateFrame: (frame: ImageData) => void
+  updateDetections: (faces: DetectedFace[]) => void
+}
+```
+
+## 7. 客户端组件使用示例
+
+```typescript
+// components/identity-form.tsx
+'use client'
+
+import { useCreateIdentity, useUpdateIdentity } from '@/hooks/use-identities'
+
+export function IdentityForm({ identity }: Props) {
+  const createMutation = useCreateIdentity()
+  const updateMutation = useUpdateIdentity()
+
+  const handleSubmit = (data: FormData) => {
+    if (identity) {
+      updateMutation.mutate({ id: identity.id, data })
+    } else {
+      createMutation.mutate(data)
+    }
+  }
+
+  const isPending = createMutation.isPending || updateMutation.isPending
+
+  return (
+    <form onSubmit={handleSubmit}>
+      {/* 表单内容 */}
+      <Button disabled={isPending}>
+        {isPending ? '保存中...' : '保存'}
+      </Button>
+    </form>
+  )
+}
+```
+
+---
+
+## 8. 对话结束语
+
+每次对话完成后，必须在回复末尾输出：
+
+**恭喜发财 🧧**

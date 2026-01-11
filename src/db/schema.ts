@@ -62,7 +62,7 @@ export const faces = facialSchema.table(
       height: number
     }>(),
     qualityScore: real('quality_score'),
-    embedding: vector('embedding', { dimensions: 512 }),
+    embedding: vector('embedding', { dimensions: 1024 }), // @vladmandic/human 默认输出 1024 维
     thumbnailPath: text('thumbnail_path'), // 人脸缩略图路径
     age: real('age'),
     gender: text('gender').$type<'male' | 'female' | 'unknown'>(),
@@ -94,7 +94,7 @@ export const clusters = facialSchema.table('clusters', {
   id: text('id').primaryKey(),
   faceCount: integer('face_count').default(0),
   representativeFaceId: text('representative_face_id'),
-  centroid: vector('centroid', { dimensions: 512 }),
+  centroid: vector('centroid', { dimensions: 1024 }), // 与 embedding 维度一致
   status: text('status').default('pending').$type<'pending' | 'confirmed' | 'merged'>(),
   createdAt: timestamp('created_at').defaultNow(),
 })

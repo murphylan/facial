@@ -10,40 +10,60 @@ import {
   Loader2,
   AlertCircle,
   Scan,
-  Save,
   User,
   ImageIcon,
   Settings,
   Users,
-  Eye,
   EyeOff,
+  UserCheck,
+  UserX,
+  Activity,
 } from 'lucide-react'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { useCameraStore, type DetectedFace } from '@/stores/camera-store'
+import { useCameraStore, streamManager, type DetectedFace } from '@/stores/camera-store'
 import { useSettingsStore } from '@/stores/settings-store'
-import { useFaceDetection, useImageFaceDetection, useRealtimeRecognition } from '@/hooks/use-face-detection'
+import { useFaceDetection, useRealtimeRecognition } from '@/hooks/use-face-detection'
 import { useCaptureFrame, useEnsureDefaultCamera } from '@/hooks/use-cameras'
+import { saveRecognitionFace, type DetectedFaceData } from '@/app/actions/detect'
 import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
-import { CameraSelector, useCameraDevices } from '@/components/camera'
+import { CameraSelector } from '@/components/camera'
 import { Separator } from '@/components/ui/separator'
 import { ScrollArea } from '@/components/ui/scroll-area'
 
 export default function CameraPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
 
   const [isStarting, setIsStarting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [isDetecting, setIsDetecting] = useState(false)
-  const [autoRecognize, setAutoRecognize] = useState(false)
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>()
-  const [capturedCount, setCapturedCount] = useState(0)
 
-  const { isStreaming, setStreaming, detectedFaces, updateDetections } = useCameraStore()
+  // 从 Zustand Store 获取状态
+  const { 
+    isStreaming, 
+    setStreaming, 
+    detectedFaces, 
+    updateDetections,
+    isRecognizing,
+    recognitionStats,
+    isDetecting,
+    setDetecting,
+    autoRecognize,
+    setAutoRecognize,
+    autoSaveStrangers,
+    setAutoSaveStrangers,
+    selectedDeviceId,
+    setSelectedDeviceId,
+    localCameraId,
+    setLocalCameraId,
+    savedStrangersCount,
+    incrementSavedStrangers,
+    capturedCount,
+    incrementCaptured,
+    error,
+    setError,
+  } = useCameraStore()
   const { showBoundingBoxes, showConfidence, showAgeGender } = useSettingsStore()
 
   const {
@@ -55,14 +75,106 @@ export default function CameraPage() {
     error: modelError,
   } = useFaceDetection()
 
-  const { recognize, isRecognizing } = useRealtimeRecognition()
+  // 保存陌生人的回调
+  const handleStrangerDetected = useCallback((face: DetectedFace) => {
+    if (!autoSaveStrangers || !videoRef.current || !localCameraId) return
+
+    const video = videoRef.current
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    ctx.drawImage(video, 0, 0)
+    const frameBase64 = canvas.toDataURL('image/jpeg', 0.9)
+
+    // 裁剪人脸区域作为缩略图
+    const { x, y, width, height } = face.bbox
+    const padding = 0.2
+    const padX = width * padding
+    const padY = height * padding
+    const cropX = Math.max(0, x - padX)
+    const cropY = Math.max(0, y - padY)
+    const cropWidth = Math.min(canvas.width - cropX, width + padX * 2)
+    const cropHeight = Math.min(canvas.height - cropY, height + padY * 2)
+
+    const thumbCanvas = document.createElement('canvas')
+    thumbCanvas.width = cropWidth
+    thumbCanvas.height = cropHeight
+    const thumbCtx = thumbCanvas.getContext('2d')
+    if (thumbCtx) {
+      thumbCtx.drawImage(canvas, cropX, cropY, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight)
+    }
+    const thumbnailBase64 = thumbCanvas.toDataURL('image/jpeg', 0.85)
+
+    // 保存到数据库
+    const detection: DetectedFaceData = {
+      bbox: face.bbox,
+      embedding: face.embedding ?? null,
+      age: face.age ?? null,
+      gender: (face.gender as 'male' | 'female' | 'unknown') ?? 'unknown',
+      emotion: face.emotion ?? null,
+      qualityScore: face.confidence,
+      thumbnailBase64,
+    }
+
+    saveRecognitionFace(localCameraId, detection, frameBase64)
+      .then((result) => {
+        incrementSavedStrangers()
+        console.log('Stranger saved:', result)
+      })
+      .catch((err) => {
+        console.error('Failed to save stranger:', err)
+        toast.error('保存陌生人失败: ' + (err instanceof Error ? err.message : '未知错误'))
+      })
+  }, [autoSaveStrangers, localCameraId, incrementSavedStrangers])
+
+  const { recognizeFaces, clearRecognitionCache } = useRealtimeRecognition({
+    onStrangerDetected: handleStrangerDetected,
+  })
   const captureMutation = useCaptureFrame()
   const ensureDefaultCamera = useEnsureDefaultCamera()
+  const hasEnsuredCamera = useRef(false)
 
-  // 确保有默认摄像头
+  // 确保有默认摄像头 - 只运行一次
   useEffect(() => {
-    ensureDefaultCamera.mutate()
-  }, [])
+    if (!hasEnsuredCamera.current) {
+      hasEnsuredCamera.current = true
+      ensureDefaultCamera.mutate(undefined, {
+        onSuccess: (camera) => {
+          if (camera) {
+            setLocalCameraId(camera.id)
+          }
+        },
+      })
+    }
+  }, [ensureDefaultCamera, setLocalCameraId])
+
+  // 组件挂载时恢复视频流
+  useEffect(() => {
+    const restoreStream = async () => {
+      if (streamManager.isActive() && videoRef.current) {
+        const stream = streamManager.getStream()
+        if (stream) {
+          videoRef.current.srcObject = stream
+          try {
+            await videoRef.current.play()
+            setStreaming(true)
+            
+            // 如果之前在检测中，恢复检测
+            if (isDetecting && isModelLoaded) {
+              startDetection(videoRef.current)
+            }
+          } catch (err) {
+            console.error('Failed to restore video stream:', err)
+          }
+        }
+      }
+    }
+
+    restoreStream()
+  }, [setStreaming, isDetecting, isModelLoaded, startDetection])
 
   // 启动摄像头
   const startCamera = useCallback(async () => {
@@ -91,7 +203,8 @@ export default function CameraPage() {
         await videoRef.current.play()
       }
 
-      streamRef.current = stream
+      // 保存到全局 streamManager
+      streamManager.setStream(stream, selectedDeviceId)
       setStreaming(true)
       toast.success('摄像头已开启')
     } catch (err) {
@@ -101,28 +214,47 @@ export default function CameraPage() {
     } finally {
       setIsStarting(false)
     }
-  }, [loadModel, setStreaming, selectedDeviceId])
+  }, [loadModel, setStreaming, selectedDeviceId, setError])
 
   // 停止摄像头
   const stopCamera = useCallback(() => {
     // 停止检测
     if (isDetecting) {
       stopDetection()
-      setIsDetecting(false)
+      setDetecting(false)
     }
 
+    // 关闭自动识别
+    setAutoRecognize(false)
+
+    // 清理识别缓存
+    clearRecognitionCache()
+
     // 停止摄像头
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop())
-      streamRef.current = null
-    }
+    streamManager.stopStream()
     if (videoRef.current) {
       videoRef.current.srcObject = null
     }
     setStreaming(false)
     updateDetections([])
     toast.info('摄像头已关闭')
-  }, [isDetecting, stopDetection, setStreaming, updateDetections])
+  }, [isDetecting, stopDetection, clearRecognitionCache, setStreaming, updateDetections, setDetecting, setAutoRecognize])
+
+  // 自动识别：当检测到人脸且开启自动识别时
+  // Hook 内部会处理冷却机制（同一人 3 分钟内不重复识别）
+  useEffect(() => {
+    if (!autoRecognize || !isDetecting || detectedFaces.length === 0) return
+
+    // 只处理有 embedding 且尚未显示识别结果的人脸
+    const facesToProcess = detectedFaces.filter(
+      (face) => face.embedding && !face.recognition
+    )
+
+    if (facesToProcess.length === 0) return
+
+    // 识别人脸（hook 内部会处理冷却和缓存）
+    recognizeFaces(facesToProcess, localCameraId ?? undefined)
+  }, [autoRecognize, isDetecting, detectedFaces, recognizeFaces, localCameraId])
 
   // 开始/停止检测
   const toggleDetection = useCallback(() => {
@@ -130,14 +262,14 @@ export default function CameraPage() {
 
     if (isDetecting) {
       stopDetection()
-      setIsDetecting(false)
+      setDetecting(false)
       toast.info('人脸检测已停止')
     } else {
       startDetection(videoRef.current)
-      setIsDetecting(true)
+      setDetecting(true)
       toast.success('人脸检测已开始')
     }
-  }, [isDetecting, startDetection, stopDetection])
+  }, [isDetecting, startDetection, stopDetection, setDetecting])
 
   // 截图保存
   const captureScreenshot = useCallback(async () => {
@@ -156,15 +288,15 @@ export default function CameraPage() {
 
     try {
       await captureMutation.mutateAsync({
-        cameraId: 'local',
+        cameraId: localCameraId ?? 'local',
         frameBase64: base64,
       })
-      setCapturedCount((prev) => prev + 1)
+      incrementCaptured()
       toast.success('截图已保存')
-    } catch (err) {
+    } catch {
       toast.error('保存截图失败')
     }
-  }, [captureMutation])
+  }, [captureMutation, localCameraId, incrementCaptured])
 
   // 绘制检测框
   useEffect(() => {
@@ -191,15 +323,22 @@ export default function CameraPage() {
       // 绘制检测框
       for (const face of detectedFaces) {
         const { x, y, width, height } = face.bbox
+        const recognition = face.recognition
+
+        // 根据识别结果选择颜色
+        let boxColor = '#22c55e' // 绿色（默认/检测中）
+        if (recognition) {
+          boxColor = recognition.isStranger ? '#eab308' : '#3b82f6' // 黄色（陌生人）/ 蓝色（已识别）
+        }
 
         // 边框
-        ctx.strokeStyle = '#22c55e'
+        ctx.strokeStyle = boxColor
         ctx.lineWidth = 2
         ctx.strokeRect(x, y, width, height)
 
         // 角落装饰
         const cornerLength = Math.min(width, height) * 0.2
-        ctx.strokeStyle = '#22c55e'
+        ctx.strokeStyle = boxColor
         ctx.lineWidth = 3
 
         // 左上角
@@ -230,17 +369,41 @@ export default function CameraPage() {
         ctx.lineTo(x + width, y + height - cornerLength)
         ctx.stroke()
 
-        // 标签背景
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'
-        ctx.fillRect(x, y - 25, width, 22)
+        // 标签背景 - 识别结果放在上方
+        const labelHeight = recognition ? 44 : 22
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'
+        ctx.fillRect(x, y - labelHeight - 3, width, labelHeight)
 
         // 标签文字
         ctx.fillStyle = '#ffffff'
         ctx.font = '12px system-ui, sans-serif'
 
+        // 第一行：识别结果
+        if (recognition) {
+          ctx.font = 'bold 13px system-ui, sans-serif'
+          const identityLabel = recognition.isStranger 
+            ? '⚠ 陌生人' 
+            : `✓ ${recognition.identityName || '未知'}`
+          ctx.fillStyle = recognition.isStranger ? '#fbbf24' : '#60a5fa'
+          ctx.fillText(identityLabel, x + 4, y - labelHeight + 12)
+          
+          // 置信度
+          if (recognition.confidence) {
+            const confText = `${(recognition.confidence * 100).toFixed(0)}%`
+            const textWidth = ctx.measureText(identityLabel).width
+            ctx.fillStyle = '#9ca3af'
+            ctx.font = '11px system-ui, sans-serif'
+            ctx.fillText(confText, x + textWidth + 10, y - labelHeight + 12)
+          }
+        }
+
+        // 第二行：检测信息
+        ctx.fillStyle = '#ffffff'
+        ctx.font = '11px system-ui, sans-serif'
+        
         let label = ''
         if (showConfidence) {
-          label += `${(face.confidence * 100).toFixed(0)}%`
+          label += `检测 ${(face.confidence * 100).toFixed(0)}%`
         }
         if (showAgeGender && face.age) {
           if (label) label += ' · '
@@ -254,7 +417,8 @@ export default function CameraPage() {
           label += translateEmotion(face.emotion)
         }
 
-        ctx.fillText(label, x + 4, y - 8)
+        const labelY = recognition ? y - 10 : y - 8
+        ctx.fillText(label, x + 4, labelY)
       }
 
       animationId = requestAnimationFrame(draw)
@@ -269,14 +433,7 @@ export default function CameraPage() {
     }
   }, [isStreaming, detectedFaces, showBoundingBoxes, showConfidence, showAgeGender])
 
-  // 清理
-  useEffect(() => {
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop())
-      }
-    }
-  }, [])
+  // 注意：不再在组件卸载时停止摄像头，保持流存活
 
   return (
     <>
@@ -316,6 +473,16 @@ export default function CameraPage() {
                   <Badge variant="default" className="bg-blue-500">
                     <Scan className="mr-1 h-3 w-3" />
                     检测中
+                  </Badge>
+                )}
+                {autoRecognize && isDetecting && (
+                  <Badge variant="default" className="bg-purple-500">
+                    {isRecognizing ? (
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    ) : (
+                      <UserCheck className="mr-1 h-3 w-3" />
+                    )}
+                    识别中
                   </Badge>
                 )}
               </div>
@@ -421,6 +588,34 @@ export default function CameraPage() {
 
           {/* 侧边栏 */}
           <div className="space-y-6">
+            {/* 识别统计 - 仅在开启自动识别时显示 */}
+            {autoRecognize && recognitionStats.total > 0 && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Activity className="h-4 w-4" />
+                    本次识别统计
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="rounded-lg bg-muted p-2">
+                      <div className="text-xl font-bold">{recognitionStats.total}</div>
+                      <div className="text-xs text-muted-foreground">总计</div>
+                    </div>
+                    <div className="rounded-lg bg-green-500/10 p-2">
+                      <div className="text-xl font-bold text-green-600">{recognitionStats.identified}</div>
+                      <div className="text-xs text-muted-foreground">已识别</div>
+                    </div>
+                    <div className="rounded-lg bg-yellow-500/10 p-2">
+                      <div className="text-xl font-bold text-yellow-600">{recognitionStats.strangers}</div>
+                      <div className="text-xs text-muted-foreground">陌生人</div>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             {/* 检测结果 */}
             <Card>
               <CardHeader>
@@ -439,7 +634,7 @@ export default function CameraPage() {
                   <ScrollArea className="h-64">
                     <div className="space-y-2 pr-4">
                       {detectedFaces.map((face, index) => (
-                        <FaceCard key={face.id} face={face} index={index} />
+                        <FaceCard key={face.id} face={face} index={index} autoRecognize={autoRecognize} />
                       ))}
                     </div>
                   </ScrollArea>
@@ -469,6 +664,26 @@ export default function CameraPage() {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   开启后将自动与身份库匹配，并记录识别结果
+                </p>
+
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="auto-save-strangers" className="text-sm">
+                    保存陌生人
+                  </Label>
+                  <Switch
+                    id="auto-save-strangers"
+                    checked={autoSaveStrangers}
+                    onCheckedChange={setAutoSaveStrangers}
+                    disabled={!autoRecognize}
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  自动保存陌生人截图，用于后续聚类标注
+                  {savedStrangersCount > 0 && (
+                    <span className="ml-1 text-yellow-600">
+                      (已保存 {savedStrangersCount} 张)
+                    </span>
+                  )}
                 </p>
 
                 <Separator />
@@ -521,18 +736,53 @@ export default function CameraPage() {
 }
 
 // 人脸卡片组件
-function FaceCard({ face, index }: { face: DetectedFace; index: number }) {
+function FaceCard({ face, index, autoRecognize }: { face: DetectedFace; index: number; autoRecognize: boolean }) {
+  const recognition = face.recognition
+
+  // 根据识别状态选择样式
+  const getIconStyle = () => {
+    if (!autoRecognize || !recognition) {
+      return { bg: 'bg-green-500/10', icon: User, color: 'text-green-500' }
+    }
+    if (recognition.isStranger) {
+      return { bg: 'bg-yellow-500/10', icon: UserX, color: 'text-yellow-500' }
+    }
+    return { bg: 'bg-blue-500/10', icon: UserCheck, color: 'text-blue-500' }
+  }
+
+  const style = getIconStyle()
+  const IconComponent = style.icon
+
   return (
-    <div className="flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-muted/50">
+    <div className={`flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-muted/50 ${
+      recognition?.isStranger ? 'border-yellow-500/30' : recognition ? 'border-blue-500/30' : ''
+    }`}>
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-500/10">
-          <User className="h-5 w-5 text-green-500" />
+        <div className={`flex h-10 w-10 items-center justify-center rounded-full ${style.bg}`}>
+          <IconComponent className={`h-5 w-5 ${style.color}`} />
         </div>
         <div>
-          <p className="text-sm font-medium">人脸 #{index + 1}</p>
-          <p className="text-xs text-muted-foreground">
-            {(face.confidence * 100).toFixed(1)}% 置信度
-          </p>
+          {recognition ? (
+            <>
+              <p className="text-sm font-medium">
+                {recognition.isStranger ? (
+                  <span className="text-yellow-600">陌生人</span>
+                ) : (
+                  <span className="text-blue-600">{recognition.identityName || '未知身份'}</span>
+                )}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                匹配度 {recognition.confidence ? `${(recognition.confidence * 100).toFixed(0)}%` : '-'}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium">人脸 #{index + 1}</p>
+              <p className="text-xs text-muted-foreground">
+                检测置信度 {(face.confidence * 100).toFixed(1)}%
+              </p>
+            </>
+          )}
         </div>
       </div>
       <div className="text-right text-xs text-muted-foreground">
