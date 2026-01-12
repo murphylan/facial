@@ -2,7 +2,7 @@
 
 import { db } from '@/db'
 import { faces, images, clusters } from '@/db/schema'
-import { eq } from 'drizzle-orm'
+import { eq, gte, and } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { generateId } from '@/lib/utils'
 import { cosineSimilarity, meanVector } from '@/lib/embedding'
@@ -11,6 +11,10 @@ import { join } from 'path'
 
 // 增量聚类阈值
 const CLUSTERING_THRESHOLD = 0.5
+
+// 服务端去重配置
+const DEDUP_TIME_WINDOW_MS = 10 * 60 * 1000 // 10 分钟内不重复保存同一人
+const DEDUP_SIMILARITY_THRESHOLD = 0.7 // 相似度 >= 0.7 视为同一人
 
 // ============================================
 // 人脸检测相关 Server Actions
@@ -118,14 +122,54 @@ export async function saveRecognitionFace(
   cameraId: string,
   detection: DetectedFaceData,
   frameBase64: string
-): Promise<{ imageId: string; faceId: string; clusterId: string | null }> {
+): Promise<{ imageId: string; faceId: string; clusterId: string | null; skipped?: boolean }> {
   console.log('[saveRecognitionFace] Starting save for camera:', cameraId, 'hasEmbedding:', !!detection.embedding)
+  
+  // 服务端去重检查：检查最近是否已保存过高度相似的人脸
+  if (detection.embedding && Array.isArray(detection.embedding)) {
+    const embedding = detection.embedding as number[]
+    const cutoffTime = new Date(Date.now() - DEDUP_TIME_WINDOW_MS)
+    
+    // 获取同一摄像头最近的人脸记录
+    const recentFaces = await db.query.faces.findMany({
+      where: and(
+        gte(faces.createdAt, cutoffTime)
+      ),
+      with: {
+        image: true,
+      },
+      limit: 50,
+      orderBy: (faces, { desc }) => [desc(faces.createdAt)],
+    })
+    
+    // 筛选同一摄像头的人脸并检查相似度
+    const sameCameraFaces = recentFaces.filter(
+      (f) => f.image?.sourceType === 'camera' && f.image?.sourceId === cameraId
+    )
+    
+    for (const face of sameCameraFaces) {
+      if (face.embedding) {
+        const similarity = cosineSimilarity(embedding, face.embedding as number[])
+        if (similarity >= DEDUP_SIMILARITY_THRESHOLD) {
+          console.log('[saveRecognitionFace] Skipped: similar face already saved recently, similarity:', similarity.toFixed(3))
+          // 返回已存在的人脸信息，避免重复保存
+          return { 
+            imageId: face.imageId ?? '', 
+            faceId: face.id, 
+            clusterId: face.clusterId,
+            skipped: true,
+          }
+        }
+      }
+    }
+  }
+  
   const UPLOAD_DIR = process.env.UPLOAD_DIR ?? './public/uploads'
   const THUMBNAILS_DIR = process.env.THUMBNAILS_DIR ?? './public/thumbnails'
   const dateDir = new Date().toISOString().slice(0, 10).replace(/-/g, '')
 
   // 保存帧图片
-  const frameDir = join(UPLOAD_DIR, 'camera', dateDir)
+  const frameDir = join(UPLOAD_DIR, 'camera', cameraId, dateDir)
   await mkdir(frameDir, { recursive: true })
 
   const imageId = generateId()
@@ -140,7 +184,7 @@ export async function saveRecognitionFace(
       const filename = `${imageId}.${ext}`
       const filePath = join(frameDir, filename)
       await writeFile(filePath, buffer)
-      framePublicPath = `/uploads/camera/${dateDir}/${filename}`
+      framePublicPath = `/uploads/camera/${cameraId}/${dateDir}/${filename}`
     }
   } catch (error) {
     console.error('Failed to save frame:', error)
@@ -197,9 +241,10 @@ export async function saveRecognitionFace(
   if (detection.embedding && Array.isArray(detection.embedding)) {
     const embedding = detection.embedding as number[]
     
-    // 获取所有待处理的聚类
+    // 获取所有活跃的聚类（pending 和 confirmed，排除 merged）
+    // 这样可以将新人脸分配到已标注的聚类中，避免创建重复聚类
     const existingClusters = await db.query.clusters.findMany({
-      where: eq(clusters.status, 'pending'),
+      where: (clusters, { ne }) => ne(clusters.status, 'merged'),
     })
     
     // 查找最匹配的聚类

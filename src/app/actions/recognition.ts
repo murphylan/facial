@@ -88,6 +88,8 @@ export async function recognizeFace(input: RecognizeInput) {
     },
   })
 
+  console.log('[recognizeFace] Found identities:', identitiesWithClusters.length)
+  
   // 查找最佳匹配
   let bestMatch: {
     identity: typeof identitiesWithClusters[0]
@@ -97,18 +99,22 @@ export async function recognizeFace(input: RecognizeInput) {
   const threshold = 0.6 // 识别阈值
 
   for (const identity of identitiesWithClusters) {
+    console.log(`[recognizeFace] Checking identity: ${identity.name}, clusters: ${identity.identityClusters.length}`)
     for (const ic of identity.identityClusters) {
       if (ic.cluster?.centroid) {
-        const similarity = cosineSimilarity(
-          embedding,
-          ic.cluster.centroid as number[]
-        )
+        const centroid = ic.cluster.centroid as number[]
+        const similarity = cosineSimilarity(embedding, centroid)
+        console.log(`[recognizeFace] - Cluster ${ic.clusterId?.slice(0, 8)}: similarity = ${similarity.toFixed(4)}, centroid length = ${centroid.length}`)
         if (similarity >= threshold && (!bestMatch || similarity > bestMatch.similarity)) {
           bestMatch = { identity, similarity }
         }
+      } else {
+        console.log(`[recognizeFace] - Cluster ${ic.clusterId?.slice(0, 8)}: NO CENTROID`)
       }
     }
   }
+  
+  console.log('[recognizeFace] Best match:', bestMatch ? `${bestMatch.identity.name} (${bestMatch.similarity.toFixed(4)})` : 'NONE')
 
   // 创建识别记录
   const logId = generateId()

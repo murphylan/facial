@@ -108,8 +108,8 @@ export function AppSidebar() {
 
       <SidebarFooter className="border-t border-sidebar-border">
         <div className="px-4 py-3 text-xs text-muted-foreground">
-          <p>Powered by @vladmandic/human</p>
-          <p>© 2025 Facial Recognition</p>
+          <p>Powered by Murphy</p>
+          <p>© 2026 Facial Recognition</p>
         </div>
       </SidebarFooter>
     </Sidebar>

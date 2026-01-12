@@ -1,10 +1,11 @@
 'use server'
 
 import { db } from '@/db'
-import { identities, identityClusters, clusters } from '@/db/schema'
-import { eq } from 'drizzle-orm'
+import { identities, identityClusters, clusters, faces } from '@/db/schema'
+import { eq, and } from 'drizzle-orm'
 import { revalidatePath } from 'next/cache'
 import { generateId } from '@/lib/utils'
+import { meanVector } from '@/lib/embedding'
 
 // ============================================
 // 查询操作 - 供 useQuery 使用
@@ -14,6 +15,50 @@ export async function getIdentities() {
   return await db.query.identities.findMany({
     orderBy: (identities, { desc }) => [desc(identities.createdAt)],
   })
+}
+
+/**
+ * 诊断身份识别系统状态
+ */
+export async function diagnoseRecognitionSystem() {
+  const allIdentities = await db.query.identities.findMany({
+    with: {
+      identityClusters: {
+        with: {
+          cluster: true,
+        },
+      },
+    },
+  })
+
+  const diagnosis = {
+    totalIdentities: allIdentities.length,
+    identities: allIdentities.map((identity) => {
+      const clustersInfo = identity.identityClusters.map((ic) => ({
+        clusterId: ic.clusterId,
+        hasCentroid: !!(ic.cluster?.centroid),
+        centroidLength: ic.cluster?.centroid ? (ic.cluster.centroid as number[]).length : 0,
+        faceCount: ic.cluster?.faceCount ?? 0,
+        status: ic.cluster?.status,
+      }))
+      
+      return {
+        id: identity.id,
+        name: identity.name,
+        clustersCount: identity.identityClusters.length,
+        clusters: clustersInfo,
+        issues: [
+          identity.identityClusters.length === 0 ? '没有关联聚类' : null,
+          clustersInfo.some((c) => !c.hasCentroid) ? '存在没有 centroid 的聚类' : null,
+          clustersInfo.some((c) => c.centroidLength !== 1024) ? 'centroid 维度不正确' : null,
+        ].filter(Boolean),
+      }
+    }),
+  }
+
+  console.log('[diagnoseRecognitionSystem]', JSON.stringify(diagnosis, null, 2))
+  
+  return diagnosis
 }
 
 export async function getIdentityById(id: string) {
@@ -133,11 +178,47 @@ export async function linkClusterToIdentity(identityId: string, clusterId: strin
     })
     .returning()
 
-  // 更新聚类状态为已确认
-  await db
-    .update(clusters)
-    .set({ status: 'confirmed' })
-    .where(eq(clusters.id, clusterId))
+  // 确保聚类有正确的 centroid（如果没有则计算）
+  const cluster = await db.query.clusters.findFirst({
+    where: eq(clusters.id, clusterId),
+  })
+  
+  if (!cluster?.centroid) {
+    // 计算聚类的 centroid
+    const clusterFaces = await db.query.faces.findMany({
+      where: eq(faces.clusterId, clusterId),
+    })
+    
+    const embeddings = clusterFaces
+      .map((f) => f.embedding as number[] | null)
+      .filter((e): e is number[] => e !== null && e.length > 0)
+    
+    if (embeddings.length > 0) {
+      const centroid = meanVector(embeddings)
+      await db
+        .update(clusters)
+        .set({ 
+          centroid,
+          status: 'confirmed',
+          faceCount: clusterFaces.length,
+        })
+        .where(eq(clusters.id, clusterId))
+      console.log('[linkClusterToIdentity] Calculated and saved centroid for cluster:', clusterId)
+    } else {
+      console.warn('[linkClusterToIdentity] No embeddings found for cluster:', clusterId)
+      // 仅更新状态
+      await db
+        .update(clusters)
+        .set({ status: 'confirmed' })
+        .where(eq(clusters.id, clusterId))
+    }
+  } else {
+    // 更新聚类状态为已确认
+    await db
+      .update(clusters)
+      .set({ status: 'confirmed' })
+      .where(eq(clusters.id, clusterId))
+  }
 
   revalidatePath('/identities')
   revalidatePath(`/identities/${identityId}`)
@@ -147,10 +228,14 @@ export async function linkClusterToIdentity(identityId: string, clusterId: strin
 }
 
 export async function unlinkClusterFromIdentity(identityId: string, clusterId: string) {
+  // 只删除指定的身份-聚类关联
   await db
     .delete(identityClusters)
     .where(
-      eq(identityClusters.identityId, identityId) 
+      and(
+        eq(identityClusters.identityId, identityId),
+        eq(identityClusters.clusterId, clusterId)
+      )
     )
 
   // 更新聚类状态为待处理

@@ -42,9 +42,9 @@ export async function clusterUnassignedFaces(
     }
   }
 
-  // 获取现有的聚类
+  // 获取所有活跃的聚类（pending 和 confirmed，排除 merged）
   const existingClusters = await db.query.clusters.findMany({
-    where: eq(clusters.status, 'pending'),
+    where: (clusters, { ne }) => ne(clusters.status, 'merged'),
   })
 
   let newClustersCount = 0
@@ -128,7 +128,7 @@ export async function clusterUnassignedFaces(
 /**
  * 更新聚类的中心点
  */
-async function updateClusterCentroid(clusterId: string) {
+export async function updateClusterCentroid(clusterId: string) {
   const clusterFaces = await db.query.faces.findMany({
     where: eq(faces.clusterId, clusterId),
   })
@@ -137,7 +137,10 @@ async function updateClusterCentroid(clusterId: string) {
     .map((f) => f.embedding as number[] | null)
     .filter((e): e is number[] => e !== null && e.length > 0)
 
-  if (embeddings.length === 0) return
+  if (embeddings.length === 0) {
+    console.log('[updateClusterCentroid] No embeddings found for cluster:', clusterId)
+    return
+  }
 
   const newCentroid = meanVector(embeddings)
 
@@ -148,19 +151,29 @@ async function updateClusterCentroid(clusterId: string) {
       faceCount: clusterFaces.length,
     })
     .where(eq(clusters.id, clusterId))
+    
+  console.log('[updateClusterCentroid] Updated centroid for cluster:', clusterId, 'faces:', embeddings.length)
 }
 
 /**
  * 重新计算所有聚类的中心点
  */
 export async function recalculateAllCentroids() {
-  const allClusters = await db.query.clusters.findMany()
+  const allClusters = await db.query.clusters.findMany({
+    where: (clusters, { ne }) => ne(clusters.status, 'merged'),
+  })
 
+  console.log('[recalculateAllCentroids] Recalculating centroids for', allClusters.length, 'clusters')
+  
+  let updated = 0
   for (const cluster of allClusters) {
     await updateClusterCentroid(cluster.id)
+    updated++
   }
 
   revalidatePath('/clusters')
+  
+  return { updated }
 }
 
 /**

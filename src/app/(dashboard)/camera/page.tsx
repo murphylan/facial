@@ -12,12 +12,10 @@ import {
   Scan,
   User,
   ImageIcon,
-  Settings,
   Users,
   EyeOff,
   UserCheck,
   UserX,
-  Activity,
 } from 'lucide-react'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useCameraStore, streamManager, type DetectedFace } from '@/stores/camera-store'
@@ -40,10 +38,10 @@ export default function CameraPage() {
   const [isStarting, setIsStarting] = useState(false)
 
   // 从 Zustand Store 获取状态
-  const { 
-    isStreaming, 
-    setStreaming, 
-    detectedFaces, 
+  const {
+    isStreaming,
+    setStreaming,
+    detectedFaces,
     updateDetections,
     isRecognizing,
     recognitionStats,
@@ -121,8 +119,13 @@ export default function CameraPage() {
 
     saveRecognitionFace(localCameraId, detection, frameBase64)
       .then((result) => {
-        incrementSavedStrangers()
-        console.log('Stranger saved:', result)
+        // 只有在未被去重跳过时才增加计数
+        if (!result.skipped) {
+          incrementSavedStrangers()
+          console.log('Stranger saved:', result)
+        } else {
+          console.log('Stranger skipped (already saved recently):', result)
+        }
       })
       .catch((err) => {
         console.error('Failed to save stranger:', err)
@@ -161,20 +164,32 @@ export default function CameraPage() {
           try {
             await videoRef.current.play()
             setStreaming(true)
-            
+
             // 如果之前在检测中，恢复检测
-            if (isDetecting && isModelLoaded) {
+            if (isDetecting) {
+              // 先确保模型加载完成
+              if (!isModelLoaded) {
+                const loaded = await loadModel()
+                if (!loaded) {
+                  console.error('Failed to load model for detection restore')
+                  setDetecting(false)
+                  return
+                }
+              }
               startDetection(videoRef.current)
             }
           } catch (err) {
             console.error('Failed to restore video stream:', err)
           }
         }
+      } else if (isDetecting && !streamManager.isActive()) {
+        // 如果状态显示正在检测但摄像头流不存在，重置检测状态
+        setDetecting(false)
       }
     }
 
     restoreStream()
-  }, [setStreaming, isDetecting, isModelLoaded, startDetection])
+  }, [setStreaming, isDetecting, isModelLoaded, startDetection, loadModel, setDetecting])
 
   // 启动摄像头
   const startCamera = useCallback(async () => {
@@ -381,12 +396,12 @@ export default function CameraPage() {
         // 第一行：识别结果
         if (recognition) {
           ctx.font = 'bold 13px system-ui, sans-serif'
-          const identityLabel = recognition.isStranger 
-            ? '⚠ 陌生人' 
+          const identityLabel = recognition.isStranger
+            ? '⚠ 陌生人'
             : `✓ ${recognition.identityName || '未知'}`
           ctx.fillStyle = recognition.isStranger ? '#fbbf24' : '#60a5fa'
           ctx.fillText(identityLabel, x + 4, y - labelHeight + 12)
-          
+
           // 置信度
           if (recognition.confidence) {
             const confText = `${(recognition.confidence * 100).toFixed(0)}%`
@@ -400,7 +415,7 @@ export default function CameraPage() {
         // 第二行：检测信息
         ctx.fillStyle = '#ffffff'
         ctx.font = '11px system-ui, sans-serif'
-        
+
         let label = ''
         if (showConfidence) {
           label += `检测 ${(face.confidence * 100).toFixed(0)}%`
@@ -438,56 +453,137 @@ export default function CameraPage() {
   return (
     <>
       <Header title="实时摄像头" />
-      <div className="flex-1 space-y-6 p-6">
+      <div className="flex-1 space-y-4 p-6">
+        {/* 工具栏 */}
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-card px-4 py-2.5 shadow-sm">
+          {/* 状态标签 */}
+          <div className="flex items-center gap-2">
+            {isModelLoading && (
+              <Badge variant="secondary" className="text-xs">
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                加载模型
+              </Badge>
+            )}
+            {isStreaming && (
+              <Badge variant="default" className="bg-red-500 text-xs">
+                <span className="mr-1.5 h-2 w-2 animate-pulse rounded-full bg-white" />
+                LIVE
+              </Badge>
+            )}
+            {isDetecting && (
+              <Badge variant="default" className="bg-blue-500 text-xs">
+                <Scan className="mr-1 h-3 w-3" />
+                检测中
+              </Badge>
+            )}
+            {autoRecognize && isDetecting && (
+              <Badge variant="default" className="bg-purple-500 text-xs">
+                {isRecognizing ? (
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                ) : (
+                  <UserCheck className="mr-1 h-3 w-3" />
+                )}
+                识别中
+              </Badge>
+            )}
+          </div>
+
+          <div className="h-5 w-[1.5px] bg-muted-foreground/30" />
+
+          {/* 识别选项 */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <Switch
+                id="toolbar-auto-recognize"
+                checked={autoRecognize}
+                onCheckedChange={setAutoRecognize}
+                disabled={!isDetecting}
+                className="scale-90"
+              />
+              <Label htmlFor="toolbar-auto-recognize" className="text-xs font-medium cursor-pointer">
+                自动识别
+              </Label>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Switch
+                id="toolbar-auto-save"
+                checked={autoSaveStrangers}
+                onCheckedChange={setAutoSaveStrangers}
+                disabled={!autoRecognize}
+                className="scale-90"
+              />
+              <Label htmlFor="toolbar-auto-save" className="text-xs font-medium cursor-pointer">
+                保存陌生人
+                {savedStrangersCount > 0 && (
+                  <span className="ml-1 text-yellow-600">({savedStrangersCount})</span>
+                )}
+              </Label>
+            </div>
+          </div>
+
+          <div className="h-5 w-[1.5px] bg-muted-foreground/30" />
+
+          {/* 显示选项 */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <Switch
+                id="toolbar-show-boxes"
+                checked={showBoundingBoxes}
+                onCheckedChange={(checked) =>
+                  useSettingsStore.setState({ showBoundingBoxes: checked })
+                }
+                className="scale-90"
+              />
+              <Label htmlFor="toolbar-show-boxes" className="text-xs font-medium cursor-pointer">
+                检测框
+              </Label>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Switch
+                id="toolbar-show-confidence"
+                checked={showConfidence}
+                onCheckedChange={(checked) =>
+                  useSettingsStore.setState({ showConfidence: checked })
+                }
+                className="scale-90"
+              />
+              <Label htmlFor="toolbar-show-confidence" className="text-xs font-medium cursor-pointer">
+                置信度
+              </Label>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Switch
+                id="toolbar-show-age"
+                checked={showAgeGender}
+                onCheckedChange={(checked) =>
+                  useSettingsStore.setState({ showAgeGender: checked })
+                }
+                className="scale-90"
+              />
+              <Label htmlFor="toolbar-show-age" className="text-xs font-medium cursor-pointer">
+                年龄/性别
+              </Label>
+            </div>
+          </div>
+
+          {/* 统计信息 - 自动识别时显示 */}
+          {autoRecognize && recognitionStats.total > 0 && (
+            <>
+              <div className="h-5 w-[1.5px] bg-muted-foreground/30" />
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground">统计:</span>
+                <span className="font-medium">{recognitionStats.total}</span>
+                <span className="text-green-600">✓{recognitionStats.identified}</span>
+                <span className="text-yellow-600">?{recognitionStats.strangers}</span>
+              </div>
+            </>
+          )}
+        </div>
+
         <div className="grid gap-6 lg:grid-cols-3">
           {/* 视频预览 */}
           <Card className="lg:col-span-2">
-            <CardHeader className="flex flex-row items-center justify-between">
-              <div>
-                <CardTitle className="flex items-center gap-2">
-                  <Camera className="h-5 w-5" />
-                  摄像头预览
-                </CardTitle>
-                <CardDescription>
-                  {isStreaming
-                    ? isDetecting
-                      ? `正在检测人脸 - 发现 ${detectedFaces.length} 张`
-                      : '摄像头已开启'
-                    : '点击开始按钮开启摄像头'}
-                </CardDescription>
-              </div>
-              <div className="flex items-center gap-2">
-                {isModelLoading && (
-                  <Badge variant="secondary">
-                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                    加载模型中
-                  </Badge>
-                )}
-                {isStreaming && (
-                  <Badge variant="default" className="bg-red-500">
-                    <span className="mr-1.5 h-2 w-2 animate-pulse rounded-full bg-white" />
-                    LIVE
-                  </Badge>
-                )}
-                {isDetecting && (
-                  <Badge variant="default" className="bg-blue-500">
-                    <Scan className="mr-1 h-3 w-3" />
-                    检测中
-                  </Badge>
-                )}
-                {autoRecognize && isDetecting && (
-                  <Badge variant="default" className="bg-purple-500">
-                    {isRecognizing ? (
-                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                    ) : (
-                      <UserCheck className="mr-1 h-3 w-3" />
-                    )}
-                    识别中
-                  </Badge>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent>
+            <CardContent className="pt-6">
               <div className="relative aspect-video overflow-hidden rounded-lg bg-black">
                 {error || modelError ? (
                   <div className="flex h-full flex-col items-center justify-center gap-2 text-destructive">
@@ -588,34 +684,6 @@ export default function CameraPage() {
 
           {/* 侧边栏 */}
           <div className="space-y-6">
-            {/* 识别统计 - 仅在开启自动识别时显示 */}
-            {autoRecognize && recognitionStats.total > 0 && (
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Activity className="h-4 w-4" />
-                    本次识别统计
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-3 gap-2 text-center">
-                    <div className="rounded-lg bg-muted p-2">
-                      <div className="text-xl font-bold">{recognitionStats.total}</div>
-                      <div className="text-xs text-muted-foreground">总计</div>
-                    </div>
-                    <div className="rounded-lg bg-green-500/10 p-2">
-                      <div className="text-xl font-bold text-green-600">{recognitionStats.identified}</div>
-                      <div className="text-xs text-muted-foreground">已识别</div>
-                    </div>
-                    <div className="rounded-lg bg-yellow-500/10 p-2">
-                      <div className="text-xl font-bold text-yellow-600">{recognitionStats.strangers}</div>
-                      <div className="text-xs text-muted-foreground">陌生人</div>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
             {/* 检测结果 */}
             <Card>
               <CardHeader>
@@ -642,92 +710,6 @@ export default function CameraPage() {
               </CardContent>
             </Card>
 
-            {/* 快捷设置 */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Settings className="h-5 w-5" />
-                  快捷设置
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="auto-recognize" className="text-sm">
-                    自动识别
-                  </Label>
-                  <Switch
-                    id="auto-recognize"
-                    checked={autoRecognize}
-                    onCheckedChange={setAutoRecognize}
-                    disabled={!isDetecting}
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  开启后将自动与身份库匹配，并记录识别结果
-                </p>
-
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="auto-save-strangers" className="text-sm">
-                    保存陌生人
-                  </Label>
-                  <Switch
-                    id="auto-save-strangers"
-                    checked={autoSaveStrangers}
-                    onCheckedChange={setAutoSaveStrangers}
-                    disabled={!autoRecognize}
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  自动保存陌生人截图，用于后续聚类标注
-                  {savedStrangersCount > 0 && (
-                    <span className="ml-1 text-yellow-600">
-                      (已保存 {savedStrangersCount} 张)
-                    </span>
-                  )}
-                </p>
-
-                <Separator />
-
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="show-boxes" className="text-sm">
-                    显示检测框
-                  </Label>
-                  <Switch
-                    id="show-boxes"
-                    checked={showBoundingBoxes}
-                    onCheckedChange={(checked) =>
-                      useSettingsStore.setState({ showBoundingBoxes: checked })
-                    }
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="show-confidence" className="text-sm">
-                    显示置信度
-                  </Label>
-                  <Switch
-                    id="show-confidence"
-                    checked={showConfidence}
-                    onCheckedChange={(checked) =>
-                      useSettingsStore.setState({ showConfidence: checked })
-                    }
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="show-age-gender" className="text-sm">
-                    显示年龄/性别
-                  </Label>
-                  <Switch
-                    id="show-age-gender"
-                    checked={showAgeGender}
-                    onCheckedChange={(checked) =>
-                      useSettingsStore.setState({ showAgeGender: checked })
-                    }
-                  />
-                </div>
-              </CardContent>
-            </Card>
           </div>
         </div>
       </div>
@@ -754,9 +736,8 @@ function FaceCard({ face, index, autoRecognize }: { face: DetectedFace; index: n
   const IconComponent = style.icon
 
   return (
-    <div className={`flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-muted/50 ${
-      recognition?.isStranger ? 'border-yellow-500/30' : recognition ? 'border-blue-500/30' : ''
-    }`}>
+    <div className={`flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-muted/50 ${recognition?.isStranger ? 'border-yellow-500/30' : recognition ? 'border-blue-500/30' : ''
+      }`}>
       <div className="flex items-center gap-3">
         <div className={`flex h-10 w-10 items-center justify-center rounded-full ${style.bg}`}>
           <IconComponent className={`h-5 w-5 ${style.color}`} />
