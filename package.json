@@ -10,7 +10,11 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "test:full-demo": "playwright test e2e/full-demo.spec.ts --project=chromium",
+    "demo:generate": "pnpm test:full-demo && mkdir -p e2e/demo-videos && cp e2e/test-results/*/video.webm e2e/demo-videos/产品宣传.webm",
+    "demo:convert": "ffmpeg -y -i e2e/demo-videos/产品宣传.webm -c:v libx264 -preset slow -crf 18 e2e/demo-videos/产品宣传.mp4",
+    "demo:with-music": "ffmpeg -y -i e2e/demo-videos/产品宣传.webm -stream_loop -1 -i e2e/demo-videos/Snowdreams.mp3 -filter_complex '[1:a]volume=0.5[a]' -map 0:v -map '[a]' -c:v libx264 -preset slow -crf 18 -c:a aac -b:a 192k -shortest e2e/demo-videos/产品宣传_带音乐.mp4"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -49,6 +53,7 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@playwright/test": "^1.57.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20.19.27",
     "@types/react": "^19",
